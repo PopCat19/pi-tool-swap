@@ -1,0 +1,32 @@
+{
+  "name": "pi-tool-swap",
+  "version": "1.0.0",
+  "description": "Pi extension: transparently swap grep→rg and find→fd with fallback for detotated LLMs",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "extension",
+    "fd",
+    "ripgrep",
+    "rg",
+    "find",
+    "grep"
+  ],
+  "author": "PopCat19",
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.9"
+  },
+  "scripts": {
+    "lint": "bash ./scripts/lint.sh",
+    "lint:fix": "bash ./scripts/lint-fix.sh"
+  }
+}
