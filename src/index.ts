@@ -1,7 +1,9 @@
 import { spawnSync } from "node:child_process";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const SWAP_ANNOTATION_PREFIX = "[tool-swap: ";
+const SWAP_DISPLAY_PREFIX = "[tool-swap: ";
+
+const pendingSwaps = new Map<string, string>();
 
 interface BinaryStatus {
   fd: boolean;
@@ -38,20 +40,23 @@ export default function toolSwapExtension(pi: ExtensionAPI) {
     if (event.toolName !== "bash") return;
 
     const original = event.input.command as string;
-    const swapped = rewriteCommand(original);
+    const result = rewriteCommand(event.toolCallId, original);
 
-    if (swapped === original) return;
+    if (!result) return;
 
-    event.input.command = swapped;
+    event.input.command = result.command;
+    pendingSwaps.set(event.toolCallId, result.label);
     swapCount++;
   });
 
   pi.on("tool_result", async (event) => {
     if (event.toolName !== "bash") return;
 
-    const annotation = detectSwapAnnotation(event.input.command);
-    if (!annotation) return;
+    const label = pendingSwaps.get(event.toolCallId);
+    if (!label) return;
+    pendingSwaps.delete(event.toolCallId);
 
+    const annotation = `${SWAP_DISPLAY_PREFIX}${label}]`;
     const taggedContent = event.content.map((block) => {
       if (block.type !== "text") return block;
       return { ...block, text: `${annotation}\n${block.text}` };
@@ -69,69 +74,64 @@ export default function toolSwapExtension(pi: ExtensionAPI) {
   });
 }
 
-function detectSwapAnnotation(command: string): string | null {
-  if (command.includes(SWAP_ANNOTATION_PREFIX)) {
-    const m = command.match(/\[tool-swap:\s*([^\]]+)\]/);
-    return m ? `[tool-swap: ${m[1]}]` : null;
-  }
+interface RewriteResult {
+  command: string;
+  label: string;
+}
+
+function rewriteCommand(toolCallId: string, command: string): RewriteResult | null {
+  const grepResult = rewriteGrep(command);
+  if (grepResult) return grepResult;
+
+  const findResult = rewriteFind(command);
+  if (findResult) return findResult;
+
   return null;
 }
 
-function rewriteCommand(command: string): string {
-  let result = command;
-
-  result = rewriteGrep(result);
-  result = rewriteFind(result);
-
-  return result;
-}
-
-function rewriteGrep(command: string): string {
-  if (!binaries.rg) return command;
+function rewriteGrep(command: string): RewriteResult | null {
+  if (!binaries.rg) return null;
 
   const trimmed = command.trimStart();
-
-  const hasAnnotation = trimmed.startsWith(SWAP_ANNOTATION_PREFIX);
-  if (hasAnnotation) return command;
 
   const grepIdx = findCommandStart(trimmed, "grep");
-  if (grepIdx < 0) return command;
+  if (grepIdx < 0) return null;
 
-  if (isPipedFromOrTo(trimmed, grepIdx)) return command;
+  if (isPipedFromOrTo(trimmed, grepIdx, "grep")) return null;
 
+  const before = command.slice(0, command.length - trimmed.length + grepIdx);
   const grepArgs = trimmed.slice(grepIdx + "grep".length);
-  const rest = grepArgs.startsWith(" ") ? grepArgs : grepArgs;
+  const rest = grepArgs.startsWith(" ") ? grepArgs.slice(1) : grepArgs;
 
-  const prefix = command.slice(0, command.indexOf("grep", command.length - trimmed.length));
-  const annotation = `${SWAP_ANNOTATION_PREFIX}grep → rg] `;
-
-  return `${prefix}${annotation}(rg ${rest.trimStart()} 2>/dev/null) || (grep ${rest.trimStart()})`;
+  return {
+    command: `${before} (rg ${rest} 2>/dev/null) || (grep ${rest})`,
+    label: "grep → rg",
+  };
 }
 
-function rewriteFind(command: string): string {
-  if (!binaries.fd) return command;
+function rewriteFind(command: string): RewriteResult | null {
+  if (!binaries.fd) return null;
 
   const trimmed = command.trimStart();
 
-  const hasAnnotation = trimmed.startsWith(SWAP_ANNOTATION_PREFIX);
-  if (hasAnnotation) return command;
-
   const findIdx = findCommandStart(trimmed, "find");
-  if (findIdx < 0) return command;
+  if (findIdx < 0) return null;
 
-  if (isPipedFromOrTo(trimmed, findIdx)) return command;
+  if (isPipedFromOrTo(trimmed, findIdx, "find")) return null;
 
-  if (trimmed.includes("-exec")) return command;
-  if (trimmed.includes("-execdir")) return command;
+  if (trimmed.includes("-exec")) return null;
+  if (trimmed.includes("-execdir")) return null;
 
+  const before = command.slice(0, command.length - trimmed.length + findIdx);
   const findArgs = trimmed.slice(findIdx + "find".length);
   const rest = findArgs.startsWith(" ") ? findArgs.slice(1) : findArgs;
 
   const translated = translateFindToFd(rest);
-  const prefix = command.slice(0, command.indexOf("find", command.length - trimmed.length));
-  const annotation = `${SWAP_ANNOTATION_PREFIX}find → fd] `;
 
-  return `${prefix}${annotation}(${translated} 2>/dev/null) || (find ${rest})`;
+  return {
+    command: `${before} (${translated} 2>/dev/null) || (find ${rest})`,
+    label: "find → fd",
+  };
 }
 
 function translateFindToFd(args: string): string {
@@ -223,11 +223,11 @@ function findCommandStart(cmd: string, name: string): number {
   return match ? match.index! + match[0].indexOf(name) : -1;
 }
 
-function isPipedFromOrTo(cmd: string, cmdStart: number): boolean {
+function isPipedFromOrTo(cmd: string, cmdStart: number, name: string): boolean {
   if (cmdStart > 0 && cmd.slice(0, cmdStart).trimEnd().endsWith("|")) return true;
-  const after = cmd.slice(cmdStart);
+  const after = cmd.slice(cmdStart + name.length);
   const nextPipe = after.indexOf("|");
-  if (nextPipe >= 0 && after.slice(0, nextPipe).trim().endsWith(name)) return true;
+  if (nextPipe >= 0 && after.slice(0, nextPipe).trim() === "") return true;
   return false;
 }
 
