@@ -97,14 +97,18 @@ function rewriteGrep(command: string): RewriteResult | null {
   const grepIdx = findCommandStart(trimmed, "grep");
   if (grepIdx < 0) return null;
 
+  if (isWrappedByCaller(trimmed, grepIdx, "grep")) return null;
+
   if (isPipedFromOrTo(trimmed, grepIdx, "grep")) return null;
 
   const before = command.slice(0, command.length - trimmed.length + grepIdx);
   const grepArgs = trimmed.slice(grepIdx + "grep".length);
   const rest = grepArgs.startsWith(" ") ? grepArgs.slice(1) : grepArgs;
 
+  const cleanRest = stripRedirect(rest, "2>/dev/null");
+
   return {
-    command: `${before} (rg ${rest} 2>/dev/null) || (grep ${rest})`,
+    command: `${before} (rg ${cleanRest} 2>/dev/null) || (grep ${rest})`,
     label: "grep → rg",
   };
 }
@@ -126,7 +130,7 @@ function rewriteFind(command: string): RewriteResult | null {
   const findArgs = trimmed.slice(findIdx + "find".length);
   const rest = findArgs.startsWith(" ") ? findArgs.slice(1) : findArgs;
 
-  const translated = translateFindToFd(rest);
+  const translated = translateFindToFd(stripRedirect(rest, "2>/dev/null"));
 
   return {
     command: `${before} (${translated} 2>/dev/null) || (find ${rest})`,
@@ -218,17 +222,59 @@ function translateFindToFd(args: string): string {
 
 function findCommandStart(cmd: string, name: string): number {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`(^|\\s)${escaped}(?=\\s|/.|$)`);
-  const match = cmd.match(re);
-  return match ? match.index! + match[0].indexOf(name) : -1;
+  const re = new RegExp(`(?:^|\\s|;|\\||&|\\(|!)${escaped}(?=\\s|/.|$)`, "gm");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(cmd)) !== null) {
+    const idx = match.index + match[0].indexOf(name);
+    if (!isInsideQuote(cmd, idx)) return idx;
+  }
+  return -1;
+}
+
+function isInsideQuote(cmd: string, idx: number): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < idx; i++) {
+    const ch = cmd[i];
+    if (ch === "\\" && (inSingle || inDouble)) { i++; continue; }
+    if (ch === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (ch === '"' && !inSingle) { inDouble = !inDouble; continue; }
+  }
+  return inSingle || inDouble;
+}
+
+function isWrappedByCaller(cmd: string, cmdStart: number, name: string): boolean {
+  if (cmdStart === 0) return false;
+  const before = cmd.slice(0, cmdStart);
+  const callers = ["xargs", "parallel", "find ", "-exec ", "exec "];
+  for (const caller of callers) {
+    const lastIdx = before.lastIndexOf(caller);
+    if (lastIdx >= 0) {
+      const afterCaller = before.slice(lastIdx + caller.length);
+      if (/^\s*$/.test(afterCaller)) return true;
+    }
+  }
+  return false;
 }
 
 function isPipedFromOrTo(cmd: string, cmdStart: number, name: string): boolean {
   if (cmdStart > 0 && cmd.slice(0, cmdStart).trimEnd().endsWith("|")) return true;
   const after = cmd.slice(cmdStart + name.length);
-  const nextPipe = after.indexOf("|");
-  if (nextPipe >= 0 && after.slice(0, nextPipe).trim() === "") return true;
+  const pipeIdx = after.indexOf("|");
+  if (pipeIdx >= 0) return true;
   return false;
+}
+
+function stripRedirect(args: string, redirect: string): string {
+  let result = args;
+  while (result.endsWith(` ${redirect}`) || result.endsWith(redirect)) {
+    if (result.endsWith(` ${redirect}`)) {
+      result = result.slice(0, -redirect.length - 1);
+    } else {
+      result = result.slice(0, -redirect.length);
+    }
+  }
+  return result;
 }
 
 function parseShellWords(args: string): string[] {
