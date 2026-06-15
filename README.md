@@ -4,7 +4,7 @@ Pi extension that transparently swaps `grep → rg` and `find → fd` on every b
 
 ## How it works
 
-- **`tool_call`**: rewrites bash commands at command-start boundaries — `grep` becomes `(rg <args> 2>/dev/null) || (grep <args>)`, `find` becomes `(fd <args> 2>/dev/null) || (find <args>)`
+- **`tool_call`**: rewrites bash commands at command-start boundaries, `grep` becomes `(rg <args> 2>/dev/null) || (grep <args>)`, `find` becomes `(fd <args> 2>/dev/null) || (find <args>)`
 - **`tool_result`**: injects `[tool-swap: grep → rg]` or `[tool-swap: find → fd]` annotation so LLMs learn the preferred tool
 - **Skips**: piped-to/from greps, `find -exec`/`-execdir` (not translatable)
 - **Startup**: logs whether `fd`/`rg` on PATH; disables silently if missing
